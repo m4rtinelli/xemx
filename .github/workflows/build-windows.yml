@@ -1,0 +1,57 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release -- /m /v:m
+
+      - name: Version
+        shell: bash
+        run: echo "VERSION=$(sed -n 's/^project(XEMX VERSION \([0-9.]*\)).*/\1/p' CMakeLists.txt)" >> "$GITHUB_ENV"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=$env:VERSION" "/DArtefacts=..\build\XEMX_artefacts\Release" installer\xemx.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item XEMX-Setup.exe | Select-Object Name, Length
+
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item -Recurse build\XEMX_artefacts\Release\VST3\XEMX.vst3 dist\
+          Copy-Item build\XEMX_artefacts\Release\Standalone\XEMX.exe dist\
+          Copy-Item installer\README-WINDOWS.txt dist\README.txt
+          Compress-Archive -Path dist\* -DestinationPath XEMX-Windows-portable.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XEMX-Windows
+          path: |
+            XEMX-Setup.exe
+            XEMX-Windows-portable.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" XEMX-Setup.exe XEMX-Windows-portable.zip --title "XEMX ${{ github.ref_name }}" --notes-file installer/RELEASE_NOTES.md
